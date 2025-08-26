@@ -1,0 +1,98 @@
+// This PineScript indicator implements an enhanced 3 EMA Pullback strategy.
+//
+// --- CORE STRATEGY ---
+// It identifies potential entries during pullbacks within a confirmed trend. The trend is defined by the alignment of 50, 100, and 200 period EMAs.
+// A pullback is identified by a counter-trend crossover of the MACD signal lines.
+//
+// --- ENHANCEMENTS / FILTERS (Optional) ---
+// 1. RSI Filter: Confirms the pullback isn't a full reversal by checking if RSI remains in a healthy range.
+// 2. ADX Filter: Ensures signals are only taken in a strong, trending market.
+// 3. Pullback Zone: Allows specifying whether the price must touch ANY EMA or pull back to the specific zone between the 50 and 100 EMAs.
+
+//@version=5
+indicator("Enhanced 3 EMA Pullback Strategy", overlay=true)
+
+// --- INPUTS ---
+// EMA Settings
+ema_group = "EMA Settings"
+len50 = input.int(50, "Fast EMA Length", group=ema_group)
+len100 = input.int(100, "Mid EMA Length", group=ema_group)
+len200 = input.int(200, "Slow EMA Length", group=ema_group)
+
+// MACD Settings
+macd_group = "MACD Settings"
+fast_len = input.int(12, "Fast Length", group=macd_group)
+slow_len = input.int(26, "Slow Length", group=macd_group)
+signal_len = input.int(9, "Signal Smoothing", group=macd_group)
+
+// Filter Settings
+filter_group = "Filter Settings"
+// RSI Filter
+useRsiFilter = input.bool(true, "Enable RSI Filter?", group=filter_group)
+rsiLen = input.int(14, "RSI Length", group=filter_group)
+rsiBuyLevel = input.float(40, "RSI Min Level for Buys", group=filter_group)
+rsiSellLevel = input.float(60, "RSI Max Level for Sells", group=filter_group)
+// ADX Filter
+useAdxFilter = input.bool(true, "Enable ADX Filter?", group=filter_group)
+adxLen = input.int(14, "ADX Length", group=filter_group)
+adxThreshold = input.float(20, "ADX Min Strength", group=filter_group)
+// Pullback Zone
+pullbackZoneType = input.string("Touch Any EMA", "Pullback Zone", options=["Touch Any EMA", "Touch Between 50/100 EMAs"], group=filter_group)
+
+// --- CALCULATIONS ---
+// EMAs
+ema50 = ta.ema(close, len50)
+ema100 = ta.ema(close, len100)
+ema200 = ta.ema(close, len200)
+
+// MACD
+[macdLine, signalLine, _] = ta.macd(close, fast_len, slow_len, signal_len)
+
+// RSI
+rsi = ta.rsi(close, rsiLen)
+
+// ADX
+[diplus, diminus, adx] = ta.dmi(adxLen, adxLen)
+
+// --- CONDITIONS ---
+// Core Conditions
+isUptrend = ema50 > ema100 and ema100 > ema200
+isDowntrend = ema50 < ema100 and ema100 < ema200
+is200EmaGreen = ema200 > ema200[1]
+is200EmaRed = ema200 < ema200[1]
+macdPullbackBuy = ta.crossunder(macdLine, signalLine) and macdLine > 0
+macdPullbackSell = ta.crossover(macdLine, signalLine) and macdLine < 0
+
+// Filter Conditions
+rsiOkForBuy = not useRsiFilter or rsi > rsiBuyLevel
+rsiOkForSell = not useRsiFilter or rsi < rsiSellLevel
+adxOk = not useAdxFilter or adx > adxThreshold
+
+// Pullback Zone Logic
+touchedAnyEmaBuy = low <= ema50 or low <= ema100 or low <= ema200
+touchedAnyEmaSell = high >= ema50 or high >= ema100 or high >= ema200
+zoneTop = math.max(ema50, ema100)
+zoneBottom = math.min(ema50, ema100)
+touched50_100ZoneBuy = low <= zoneTop and low >= zoneBottom
+touched50_100ZoneSell = high >= zoneBottom and high <= zoneTop
+
+pullbackBuyCondition = pullbackZoneType == "Touch Any EMA" ? touchedAnyEmaBuy : touched50_100ZoneBuy
+pullbackSellCondition = pullbackZoneType == "Touch Any EMA" ? touchedAnyEmaSell : touched50_100ZoneSell
+
+// --- SIGNAL LOGIC ---
+buySignal = isUptrend and is200EmaGreen and macdPullbackBuy and pullbackBuyCondition and rsiOkForBuy and adxOk
+sellSignal = isDowntrend and is200EmaRed and macdPullbackSell and pullbackSellCondition and rsiOkForSell and adxOk
+
+// --- PLOTTING ---
+// Plot EMAs
+plot(ema50, "50 EMA", color=color.new(color.teal, 0))
+plot(ema100, "100 EMA", color=color.new(color.orange, 0))
+plot(ema200, "200 EMA", color=is200EmaGreen ? color.green : color.red, linewidth=2)
+
+// Plot Signals
+plotshape(buySignal, title="Buy Signal", style=shape.triangleup, location=location.abovebar, color=color.new(color.lime, 0), size=size.small)
+plotshape(sellSignal, title="Sell Signal", style=shape.triangledown, location=location.belowbar, color=color.new(color.red, 0), size=size.small)
+
+// --- ALERTS ---
+alertcondition(buySignal, "3 EMA Pullback Buy", "3 EMA Pullback: BUY Signal")
+alertcondition(sellSignal, "3 EMA Pullback Sell", "3 EMA Pullback: SELL Signal")
