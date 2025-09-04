@@ -1,0 +1,105 @@
+//@version=5
+indicator("EMA System Updated (v2)", overlay=true)
+
+// —————— Inputs ——————
+// EMAs
+ema_group = "EMA Settings"
+ema_channel_len = input.int(12, "Channel EMA Length", group = ema_group)
+ema_trend1_len = input.int(50, "Trend EMA 1 Length", group = ema_group)
+ema_trend2_len = input.int(100, "Trend EMA 2 Length", group = ema_group)
+
+// Stochastic
+stoch_group = "Stochastic Settings"
+stoch_len_k = input.int(8, "%K", group = stoch_group)
+stoch_len_d = input.int(3, "%D", group = stoch_group)
+stoch_len_smooth = input.int(3, "Smoothing", group = stoch_group)
+stoch_midline = input.int(50, "Midline", group = stoch_group, tooltip = "The updated strategy uses the 50 level as a pullback threshold.")
+
+// "NOVA" Filter (Volume Strength Interpretation)
+nova_group = "NOVA (Volume) Filter"
+use_nova_filter = input.bool(true, "Enable NOVA Filter", group = nova_group, tooltip = "Filters for 'strong' candles by checking for high volume.")
+nova_vol_len = input.int(20, "Volume MA Length", group = nova_group)
+nova_vol_mult = input.float(1.5, "Volume Multiplier", group = nova_group)
+
+// "RSIOMA" Filter (RSI of MA Interpretation)
+rsioma_group = "RSIOMA Filter"
+use_rsioma_filter = input.bool(true, "Enable RSIOMA Filter", group = rsioma_group, tooltip = "Optional trend filter based on an RSI of a Moving Average.")
+rsioma_ma_len = input.int(14, "RSIOMA MA Length", group = rsioma_group)
+rsioma_len = input.int(14, "RSIOMA Length", group = rsioma_group)
+
+// —————— Indicator Calculations ——————
+// Heiken Ashi Data
+ha_ticker = ticker.heikinashi(syminfo.tickerid)
+[ha_open, ha_high, ha_low, ha_close] = request.security(ha_ticker, timeframe.period, [open, high, low, close], lookahead=barmerge.lookahead_on)
+
+// EMAs
+ema_high = ta.ema(ha_high, ema_channel_len)
+ema_low = ta.ema(ha_low, ema_channel_len)
+ema_trend1 = ta.ema(close, ema_trend1_len)
+ema_trend2 = ta.ema(close, ema_trend2_len)
+
+// Stochastic
+stoch_k_line = ta.sma(ta.stoch(close, high, low, stoch_len_k), stoch_len_smooth)
+
+// "NOVA" Filter Calculation
+is_strong_volume = volume > ta.sma(volume, nova_vol_len) * nova_vol_mult
+
+// "RSIOMA" Filter Calculation
+rsioma_ma = ta.sma(close, rsioma_ma_len)
+rsioma_val = ta.rsi(rsioma_ma, rsioma_len)
+
+// —————— State Machine and Signal Logic ——————
+
+// 1. Define Trend Condition
+is_uptrend = close > ema_trend1 and ema_trend1 > ema_trend2
+is_downtrend = close < ema_trend1 and ema_trend1 < ema_trend2
+
+// 2. Setup State (Arming the signal)
+// We need to "arm" the setup when a pullback occurs during a valid trend.
+var bool buySetupArmed = false
+var bool sellSetupArmed = false
+
+// Arm a buy setup if we are in an uptrend and the stochastic crosses below the midline (pullback starts)
+if is_uptrend and ta.crossunder(stoch_k_line, stoch_midline)
+    buySetupArmed := true
+    sellSetupArmed := false // Cancel opposite setup
+
+// Arm a sell setup if we are in a downtrend and the stochastic crosses above the midline
+if is_downtrend and ta.crossover(stoch_k_line, stoch_midline)
+    sellSetupArmed := true
+    buySetupArmed := false // Cancel opposite setup
+
+// 3. Trigger Condition
+// Once a setup is armed, we wait for the Heiken Ashi candle to trigger the entry.
+is_ha_green = ha_close > ha_open
+buy_trigger = buySetupArmed and ta.crossover(ha_close, ema_low) and is_ha_green
+
+is_ha_red = ha_close < ha_open
+sell_trigger = sellSetupArmed and ta.crossunder(ha_close, ema_high) and is_ha_red
+
+// 4. Optional Filters
+buy_filter_ok = (not use_nova_filter or is_strong_volume) and (not use_rsioma_filter or rsioma_val > 50)
+sell_filter_ok = (not use_nova_filter or is_strong_volume) and (not use_rsioma_filter or rsioma_val < 50)
+
+// 5. Final Signal
+buy_signal = buy_trigger and buy_filter_ok
+sell_signal = sell_trigger and sell_filter_ok
+
+// 6. Reset State
+// After a signal is fired, or if the trend condition is broken, we reset the armed state.
+if buy_signal or not is_uptrend
+    buySetupArmed := false
+
+if sell_signal or not is_downtrend
+    sellSetupArmed := false
+
+// —————— Plotting ——————
+// Plot EMAs
+plot(ema_high, "EMA Channel High", color=color.new(color.teal, 0))
+plot(ema_low, "EMA Channel Low", color=color.new(color.teal, 0))
+plot(ema_trend1, "Trend EMA 1", color=color.new(color.orange, 0))
+plot(ema_trend2, "Trend EMA 2", color=color.new(color.red, 0))
+
+// Plot Signals
+plotshape(buy_signal, "Buy", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.small)
+plotshape(sell_signal, "Sell", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small)

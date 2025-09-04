@@ -1,0 +1,57 @@
+//@version=5
+indicator("Sell / Buy Rates (Enhanced)", "S/B Rates+", overlay=false, precision=0)
+
+// Original script inputs
+prd = input.int(34, title="Period", minval=1)
+
+// New EMA input
+ema_len = input.int(20, title="EMA Length")
+
+// New Filter Input
+filter_group = "Filters"
+showFirstSignalOnly = input.bool(true, "Strictly Alternate Signals", group = filter_group, tooltip="If true, after a buy signal, the next signal can ONLY be a sell (and vice-versa).")
+
+// Original script calculations
+ema_val = ta.ema(close, ema_len)
+tw = high - math.max(open, close)
+bw = math.min(open, close) - low
+body = math.abs(close - open)
+
+_rate(cond) =>
+    divisor = tw + bw + body
+    // Avoid division by zero on doji candles
+    divisor == 0 ? 0 : 0.5 * (tw + bw + (cond ? 2 * body : 0)) / divisor
+
+volup = volume * _rate(open <= close)
+voldown = volume * _rate(open >= close)
+rate = ta.linreg(volup - voldown, prd, 0)
+
+// Use user-defined colors for the histogram
+col = rate > 0 ? color.rgb(15, 15, 15) : rate < 0 ? color.rgb(255, 5, 131) : color.gray
+plot(rate, "Rate", color=col, style=plot.style_columns)
+
+// —————— State Machine & Signal Logic ——————
+// State variable to track the direction of the last signal shown
+var int lastSignalDirection = 0 // 1 for buy, -1 for sell, 0 for none yet
+
+// 1. Define the base signal conditions
+base_buy_signal = close > ema_val and ta.crossover(rate, 0)
+base_sell_signal = close < ema_val and ta.crossunder(rate, 0)
+
+// 2. Determine the final signal based on the filter mode
+// If filter is off, show all base signals. If on, only show a signal if it's in the opposite direction of the last one.
+buy_signal = showFirstSignalOnly ? (base_buy_signal and lastSignalDirection != 1) : base_buy_signal
+sell_signal = showFirstSignalOnly ? (base_sell_signal and lastSignalDirection != -1) : base_sell_signal
+
+// 3. Update the state after a signal is shown
+if (showFirstSignalOnly)
+    if (buy_signal)
+        lastSignalDirection := 1
+    if (sell_signal)
+        lastSignalDirection := -1
+
+// —————— Background Color and Alerts ——————
+bgcolor(buy_signal ? color.new(color.green, 85) : sell_signal ? color.new(color.red, 85) : na, title="Signal Background")
+
+alertcondition(buy_signal, title="Buy Signal", message="Rate Crossover Buy on {{ticker}}")
+alertcondition(sell_signal, title="Sell Signal", message="Rate Crossover Sell on {{ticker}}")

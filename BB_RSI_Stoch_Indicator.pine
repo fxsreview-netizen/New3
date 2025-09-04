@@ -1,0 +1,121 @@
+//@version=5
+indicator("BB RSI Stoch Strategy", overlay=true)
+
+// —————— Inputs ——————
+// Bollinger Bands
+bb_group = "Bollinger Bands"
+bb_len = input.int(50, "Length", group = bb_group)
+bb_stddev1 = input.float(2.0, "StdDev 1 (Red)", group = bb_group)
+bb_stddev2 = input.float(3.0, "StdDev 2 (Yellow)", group = bb_group)
+bb_stddev3 = input.float(4.0, "StdDev 3 (Orange)", group = bb_group)
+
+// RSI
+rsi_group = "RSI"
+rsi_len = input.int(3, "Length", group = rsi_group)
+rsi_buy_setup_level = input.int(20, "Buy Setup Level (<)", group = rsi_group)
+rsi_sell_setup_level = input.int(80, "Sell Setup Level (>)", group = rsi_group)
+
+// Stochastic
+stoch_group = "Stochastic"
+stoch_len_k = input.int(6, "%K", group = stoch_group)
+stoch_len_d = input.int(3, "%D", group = stoch_group)
+stoch_len_smooth = input.int(3, "Smoothing", group = stoch_group)
+stoch_buy_setup_level = input.int(20, "Buy Setup Level (<)", group = stoch_group)
+stoch_buy_trigger_level = input.int(40, "Buy Trigger Level (>=)", group = stoch_group)
+stoch_sell_setup_level = input.int(80, "Sell Setup Level (>)", group = stoch_group)
+stoch_sell_trigger_level = input.int(60, "Sell Trigger Level (<=)", group = stoch_group)
+
+// EMAs
+ema_group = "EMAs"
+ema100_len = input.int(100, "EMA 1 Length", group = ema_group)
+ema200_len = input.int(200, "EMA 2 Length", group = ema_group)
+
+// Filters
+filter_group = "Filters"
+use_ema_filter = input.bool(true, "Enable EMA Filter", group = filter_group, tooltip="If enabled, signals will be ignored if EMA 100 or EMA 200 is inside the main Bollinger Band.")
+
+// —————— Indicator Calculations ——————
+// Bollinger Bands
+[bb_basis, bb_upper1, bb_lower1] = ta.bb(close, bb_len, bb_stddev1)
+[_, bb_upper2, bb_lower2] = ta.bb(close, bb_len, bb_stddev2)
+[_, bb_upper3, bb_lower3] = ta.bb(close, bb_len, bb_stddev3)
+
+// RSI
+rsi_val = ta.rsi(close, rsi_len)
+
+// Stochastic
+stoch_k_line = ta.sma(ta.stoch(close, high, low, stoch_len_k), stoch_len_smooth)
+
+// EMAs
+ema100 = ta.ema(close, ema100_len)
+ema200 = ta.ema(close, ema200_len)
+
+// —————— Plotting On-Chart Indicators ——————
+plot(bb_basis, "BB Basis", color=color.new(color.gray, 50))
+p1 = plot(bb_upper1, "Upper BB1", color=color.red)
+p2 = plot(bb_lower1, "Lower BB1", color=color.red)
+fill(p1, p2, color=color.new(color.red, 95), title="BB1 Fill")
+
+plot(bb_upper2, "Upper BB2", color=color.yellow)
+plot(bb_lower2, "Lower BB2", color=color.yellow)
+
+plot(bb_upper3, "Upper BB3", color=color.orange)
+plot(bb_lower3, "Lower BB3", color=color.orange)
+
+plot(ema100, "EMA 100", color=color.white)
+plot(ema200, "EMA 200", color=color.lime)
+
+// —————— State Machine Logic ——————
+// This strategy requires a two-step process. First, a "setup" must occur.
+// Then, we wait for a "trigger". These variables track the setup state.
+
+var bool buySetupActive = false
+var bool sellSetupActive = false
+
+// Buy Setup Conditions: Price breaks below the first BB, with RSI and Stoch confirming oversold.
+buySetupConditions = ta.crossunder(close, bb_lower1) and rsi_val < rsi_buy_setup_level and stoch_k_line < stoch_buy_setup_level
+if buySetupConditions
+    buySetupActive := true
+    sellSetupActive := false // A buy setup cancels a sell setup
+
+// Sell Setup Conditions: Price breaks above the first BB, with RSI and Stoch confirming overbought.
+sellSetupConditions = ta.crossover(close, bb_upper1) and rsi_val > rsi_sell_setup_level and stoch_k_line > stoch_sell_setup_level
+if sellSetupConditions
+    sellSetupActive := true
+    buySetupActive := false // A sell setup cancels a buy setup
+
+// Reset Condition: If price returns to the BB basis line before a trigger, cancel the setup.
+if ta.cross(close, bb_basis)
+    buySetupActive := false
+    sellSetupActive := false
+
+// —————— Signal Trigger Logic ——————
+// Once a setup is active, we look for the final trigger conditions to generate a signal.
+
+// Buy Trigger: Active setup, price has returned inside the lower BB, RSI and Stoch confirm.
+buyTriggerConditions = buySetupActive and (close > bb_lower1) and (rsi_val > rsi_buy_setup_level) and (stoch_k_line >= stoch_buy_trigger_level)
+buySignal = buyTriggerConditions
+
+// Sell Trigger: Active setup, price has returned inside the upper BB, RSI and Stoch confirm.
+sellTriggerConditions = sellSetupActive and (close < bb_upper1) and (rsi_val < rsi_sell_setup_level) and (stoch_k_line <= stoch_sell_trigger_level)
+sellSignal = sellTriggerConditions
+
+// After a signal is triggered, reset the setup state.
+if buySignal
+    buySetupActive := false
+if sellSignal
+    sellSetupActive := false
+
+// —————— EMA Caution Filter ——————
+// The strategy suggests not trading if the long-term EMAs are inside the main BB.
+ema100_inside_bb = ema100 < bb_upper1 and ema100 > bb_lower1
+ema200_inside_bb = ema200 < bb_upper1 and ema200 > bb_lower1
+ema_filter_is_active = use_ema_filter and (ema100_inside_bb or ema200_inside_bb)
+
+// Apply the filter to the signals
+finalBuySignal = buySignal and not ema_filter_is_active
+finalSellSignal = sellSignal and not ema_filter_is_active
+
+// —————— Plotting Signals ——————
+plotshape(series=finalBuySignal, style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.normal, title="Buy Signal")
+plotshape(series=finalSellSignal, style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.normal, title="Sell Signal")

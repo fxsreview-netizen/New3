@@ -1,0 +1,130 @@
+//@version=5
+indicator("Counter-trend Scalper Signal", overlay=true, shorttitle="CTS Signal")
+
+// —————— Inputs ——————
+// EMAs
+ema_group = "EMA Settings"
+ema9_len = input.int(9, "EMA 9 Length", group = ema_group)
+ema20_len = input.int(20, "EMA 20 Length", group = ema_group)
+ema50_len = input.int(50, "EMA 50 Length", group = ema_group)
+ema200_len = input.int(200, "EMA 200 Length", group = ema_group)
+
+// Distance Filter
+dist_group = "Distance Filter"
+atr_len = input.int(14, "ATR Length", group = dist_group)
+dist_mult = input.float(2.0, "ATR Distance Multiplier", group = dist_group, tooltip = "A signal requires the price to be at least this many ATRs away from the nearest EMA (9).")
+
+// Volume Filter
+vol_group = "Volume Filter"
+use_vol_filter = input.bool(true, "Enable Volume Filter", group = vol_group, tooltip = "If enabled, a signal only appears if volume is below its moving average, suggesting trend exhaustion.")
+vol_ma_len = input.int(20, "Volume MA Length", group = vol_group)
+
+// Re-entry Settings
+reentry_group = "Re-entry Settings"
+show_reentries = input.bool(true, "Show Re-entry Signals", group = reentry_group, tooltip = "If enabled, shows additional signals based on the 9 EMA crossing the previous signal's price level.")
+
+// RSI Divergence Filter
+div_group = "RSI Divergence Filter"
+use_rsi_div_filter = input.bool(true, "Enable RSI Divergence Filter", group = div_group, tooltip = "A powerful filter that requires price to be diverging from the RSI, signaling momentum loss.")
+div_rsi_len = input.int(14, "RSI Length for Divergence", group = div_group)
+div_pivot_lookback = input.int(5, "Pivot Lookback for Divergence", group = div_group)
+div_lookback_window = input.int(10, "Divergence Signal Lookback Window", group = div_group, tooltip = "How many bars the divergence signal should remain active while waiting for an entry.")
+
+// —————— Indicator Calculations ——————
+// EMAs
+ema9 = ta.ema(close, ema9_len)
+ema20 = ta.ema(close, ema20_len)
+ema50 = ta.ema(close, ema50_len)
+ema200 = ta.ema(close, ema200_len)
+
+// ATR Distance Threshold
+atr_val = ta.atr(atr_len)
+distance_threshold = atr_val * dist_mult
+
+// Volume MA
+vol_ma = ta.sma(volume, vol_ma_len)
+
+// RSI Divergence Calculations
+div_rsi = ta.rsi(close, div_rsi_len)
+div_pivot_bars = (div_pivot_lookback - 1) / 2
+// Bullish Divergence Detection
+price_pivot_low_1 = ta.valuewhen(ta.pivotlow(low, div_pivot_bars, div_pivot_bars), low[div_pivot_bars], 0)
+price_pivot_low_2 = ta.valuewhen(ta.pivotlow(low, div_pivot_bars, div_pivot_bars), low[div_pivot_bars], 1)
+rsi_pivot_low_1 = ta.valuewhen(ta.pivotlow(div_rsi, div_pivot_bars, div_pivot_bars), div_rsi[div_pivot_bars], 0)
+rsi_pivot_low_2 = ta.valuewhen(ta.pivotlow(div_rsi, div_pivot_bars, div_pivot_bars), div_rsi[div_pivot_bars], 1)
+bullish_divergence = price_pivot_low_1 < price_pivot_low_2 and rsi_pivot_low_1 > rsi_pivot_low_2
+// Bearish Divergence Detection
+price_pivot_high_1 = ta.valuewhen(ta.pivothigh(high, div_pivot_bars, div_pivot_bars), high[div_pivot_bars], 0)
+price_pivot_high_2 = ta.valuewhen(ta.pivothigh(high, div_pivot_bars, div_pivot_bars), high[div_pivot_bars], 1)
+rsi_pivot_high_1 = ta.valuewhen(ta.pivothigh(div_rsi, div_pivot_bars, div_pivot_bars), div_rsi[div_pivot_bars], 0)
+rsi_pivot_high_2 = ta.valuewhen(ta.pivothigh(div_rsi, div_pivot_bars, div_pivot_bars), div_rsi[div_pivot_bars], 1)
+bearish_divergence = price_pivot_high_1 > price_pivot_high_2 and rsi_pivot_high_1 < rsi_pivot_high_2
+
+// State management for divergence signal (how many bars ago did it happen?)
+var int bars_since_bull_div = 999
+var int bars_since_bear_div = 999
+
+if bullish_divergence
+    bars_since_bull_div := 0
+else
+    bars_since_bull_div := bars_since_bull_div[1] + 1
+
+if bearish_divergence
+    bars_since_bear_div := 0
+else
+    bars_since_bear_div := bars_since_bear_div[1] + 1
+
+// —————— Signal & State Logic ——————
+// State Management Variables
+var float lastBuyPrice = na
+var float lastSellPrice = na
+
+// Initial Buy Signal Conditions
+is_below_emas = close < ema9 and close < ema20 and close < ema50
+is_far_from_emas_buy = (ema9 - close) > distance_threshold
+volume_filter_ok = not use_vol_filter or volume < vol_ma
+divergence_filter_ok_buy = not use_rsi_div_filter or (bars_since_bull_div < div_lookback_window)
+initial_buy_signal = is_below_emas and is_far_from_emas_buy and volume_filter_ok and divergence_filter_ok_buy
+
+// Initial Sell Signal Conditions
+is_above_emas = close > ema9 and close > ema20 and close > ema50
+is_far_from_emas_sell = (close - ema9) > distance_threshold
+divergence_filter_ok_sell = not use_rsi_div_filter or (bars_since_bear_div < div_lookback_window)
+initial_sell_signal = is_above_emas and is_far_from_emas_sell and volume_filter_ok and divergence_filter_ok_sell
+
+// Re-entry Signal Logic
+buy_reentry_signal = show_reentries and not na(lastBuyPrice) and ta.crossunder(ema9, lastBuyPrice)
+sell_reentry_signal = show_reentries and not na(lastSellPrice) and ta.crossover(ema9, lastSellPrice)
+
+// Update State based on initial signals and re-entry signals
+if (initial_buy_signal or buy_reentry_signal)
+    lastBuyPrice := close
+    lastSellPrice := na // Reset opposite side state
+
+if (initial_sell_signal or sell_reentry_signal)
+    lastSellPrice := close
+    lastBuyPrice := na // Reset opposite side state
+
+// Reset State Logic (based on exit condition)
+// If a buy sequence is active and price touches the 20 EMA, the sequence is over.
+if (not na(lastBuyPrice) and ta.crossover(close, ema20))
+    lastBuyPrice := na
+
+// If a sell sequence is active and price touches the 20 EMA, the sequence is over.
+if (not na(lastSellPrice) and ta.crossunder(close, ema20))
+    lastSellPrice := na
+
+// —————— Plotting ——————
+// Plot EMAs for context
+plot(ema9, "EMA 9", color=color.new(color.blue, 0))
+plot(ema20, "EMA 20", color=color.new(color.orange, 0))
+plot(ema50, "EMA 50", color=color.new(color.red, 0))
+plot(ema200, "EMA 200", color=color.new(color.purple, 0))
+
+// Plot Buy and Sell Signal Arrows
+plotshape(initial_buy_signal, "Initial Buy", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.small)
+plotshape(initial_sell_signal, "Initial Sell", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small)
+
+// Plot Re-entry signals with a different style
+plotshape(buy_reentry_signal, "Buy Re-entry", style=shape.diamond, location=location.belowbar, color=color.new(color.lime, 50), size=size.tiny)
+plotshape(sell_reentry_signal, "Sell Re-entry", style=shape.diamond, location=location.abovebar, color=color.new(color.red, 50), size=size.tiny)

@@ -1,0 +1,83 @@
+//@version=5
+indicator("1B1B Scalping Indicator", "1B1B", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// —————— Inputs ——————
+htf_group = "Higher Timeframe (HTF) Settings"
+tradeControlTF = input.timeframe("60", "Trade Control Timeframe", group = htf_group, tooltip = "This is the timeframe where the primary Engulfing Candle signal is detected (e.g., H1, M30).")
+useEmaFilter = input.bool(true, "Use HTF EMA Trend Filter", group = htf_group)
+emaLength = input.int(200, "EMA Length", group = htf_group)
+
+ltf_group = "Lower Timeframe (Chart) Settings"
+pivotLookback = input.int(5, "Pivot Lookback", group = ltf_group, tooltip = "Lookback period for identifying swing points for the 'Break' part of the 1B1B pattern.")
+maxBarsBetweenBaseAndBreak = input.int(50, "Max Bars Between Base and Break", group = ltf_group)
+
+
+// —————— MTF Data Request ——————
+// Request HTF OHLC and EMA data. This is the core of the MTF logic.
+[htf_open, htf_high, htf_low, htf_close, htf_ema] = request.security(syminfo.tickerid, tradeControlTF, [open, high, low, close, ta.ema(close, emaLength)], lookahead=barmerge.lookahead_on)
+
+// —————— HTF (Higher Timeframe) Logic ——————
+// 1. Define and detect HTF engulfing candles
+is_bullish_engulfing(o, c, po, pc) => c > o and po > pc and c >= po and o <= pc
+is_bearish_engulfing(o, c, po, pc) => c < o and po < pc and c <= po and o >= pc
+
+htf_is_bull_engulf = is_bullish_engulfing(htf_open, htf_close, htf_open[1], htf_close[1])
+htf_is_bear_engulf = is_bearish_engulfing(htf_open, htf_close, htf_open[1], htf_close[1])
+
+// 2. Determine HTF trend direction (optional)
+htf_is_uptrend = htf_close > htf_ema
+htf_is_downtrend = htf_close < htf_ema
+
+// 3. Determine the current valid HTF signal direction
+// This variable will hold the direction of the last valid HTF signal (1 for buy, -1 for sell)
+var int htf_direction = 0
+
+if htf_is_bull_engulf and (not useEmaFilter or htf_is_uptrend)
+    htf_direction := 1
+if htf_is_bear_engulf and (not useEmaFilter or htf_is_downtrend)
+    htf_direction := -1
+
+// —————— LTF (Chart Timeframe) Confirmation Logic ——————
+// 1. Detect LTF Base (Engulfing Candle on the current chart)
+ltf_is_bull_engulf = is_bullish_engulfing(open, close, open[1], close[1])
+ltf_is_bear_engulf = is_bearish_engulfing(open, close, open[1], close[1])
+
+// 2. Detect LTF Break (Break of recent market structure)
+pivot_bars = (pivotLookback - 1) / 2
+last_pivot_high = ta.pivothigh(high, pivot_bars, pivot_bars)
+last_pivot_low = ta.pivotlow(low, pivot_bars, pivot_bars)
+
+// Get the value of the last pivot to avoid repainting issues
+last_pivot_high_val = ta.valuewhen(last_pivot_high, high[pivot_bars], 0)
+last_pivot_low_val = ta.valuewhen(last_pivot_low, low[pivot_bars], 0)
+
+// A break occurs if the close crosses over the last pivot point's value
+is_break_of_structure_up = ta.crossover(close, last_pivot_high_val)
+is_break_of_structure_down = ta.crossunder(close, last_pivot_low_val)
+
+// 3. Find the bar index of the most recent base
+bull_base_idx = ta.valuewhen(ltf_is_bull_engulf, bar_index, 0)
+bear_base_idx = ta.valuewhen(ltf_is_bear_engulf, bar_index, 0)
+
+// 4. Confirm the 1B1B Pattern
+// A bullish 1B1B is confirmed when an upside break occurs, and we can find a recent bullish base.
+bull_1b1b_confirmed = is_break_of_structure_up and (bar_index - bull_base_idx) < maxBarsBetweenBaseAndBreak
+bear_1b1b_confirmed = is_break_of_structure_down and (bar_index - bear_base_idx) < maxBarsBetweenBaseAndBreak
+
+// —————— Final Signal Generation ——————
+// 1. A final signal is valid if the confirmed 1B1B pattern aligns with the HTF direction.
+final_buy_signal_confirmed = htf_direction == 1 and bull_1b1b_confirmed
+final_sell_signal_confirmed = htf_direction == -1 and bear_1b1b_confirmed
+
+// 2. Identify the specific bar of the 'Base' that should get the signal marker.
+// When a signal is confirmed on the 'break' bar, we fetch the bar_index of the 'base' that started the pattern.
+buy_base_bar_to_plot = ta.valuewhen(final_buy_signal_confirmed, bull_base_idx, 0)
+sell_base_bar_to_plot = ta.valuewhen(final_sell_signal_confirmed, bear_base_idx, 0)
+
+// 3. The plot condition is only true on the one specific 'Base' bar that has now been validated by a subsequent 'Break'.
+plot_buy_signal = buy_base_bar_to_plot == bar_index
+plot_sell_signal = sell_base_bar_to_plot == bar_index
+
+// —————— Plotting Signals ——————
+plotshape(plot_buy_signal, "Buy Signal", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.small)
+plotshape(plot_sell_signal, "Sell Signal", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small)

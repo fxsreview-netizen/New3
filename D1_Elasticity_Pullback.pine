@@ -1,0 +1,133 @@
+//@version=5
+indicator("D1 Elasticity Pullback", overlay=true)
+
+// —————— Inputs ——————
+// Stochastic Inputs
+stoch_group = "Stochastic Settings"
+stoch_len_k = input.int(5, "Stochastic %K", group = stoch_group)
+stoch_len_d = input.int(3, "Stochastic %D", group = stoch_group)
+stoch_len_smooth = input.int(3, "Stochastic Smoothing", group = stoch_group)
+stoch_ob = input.int(80, "Overbought Level", group = stoch_group)
+stoch_os = input.int(20, "Oversold Level", group = stoch_group)
+
+// Fractal Inputs
+fractal_group = "Fractal Settings"
+// Note: The strategy author uses periods 8 and 25. These are left configurable.
+fractal_short = input.int(8, "Short Fractal Period (Not used in logic, for visualization)", group = fractal_group)
+fractal_long = input.int(25, "Long Fractal Period (Used for Trend)", group = fractal_group)
+
+// Strategy Toggles
+toggle_group = "Strategy Toggles"
+use_fractal_filter = input.bool(true, "Enable Fractal Trend Filter", group = toggle_group, tooltip = "If enabled, trades will only be considered if the trend, determined by the last two long-period fractals, is favorable.")
+use_inside_bar_exception = input.bool(true, "Enable Inside Bar Exception Rule", group = toggle_group, tooltip = "If the 3rd candle of the V-formation is an inside bar and closes against the trade, wait for a confirmation close on the 4th candle.")
+show_exits = input.bool(true, "Show Exit Signals on Chart", group = toggle_group, tooltip = "If enabled, will plot a marker when the stochastic enters the opposite zone (e.g., enters overbought for a long trade).")
+
+// —————— Core Logic ——————
+// 1. Stochastic Oscillator Calculation
+k_line = ta.sma(ta.stoch(close, high, low, stoch_len_k), stoch_len_smooth)
+d_line = ta.sma(k_line, stoch_len_d)
+
+// 2. Fractal Detection Logic
+// The period is converted to the number of bars to look on each side of a potential pivot.
+long_pivot_bars = (fractal_long - 1) / 2
+up_fractal_long = ta.pivothigh(high, long_pivot_bars, long_pivot_bars)
+down_fractal_long = ta.pivotlow(low, long_pivot_bars, long_pivot_bars)
+
+// 3. Fractal Trend-Following Logic
+// This section identifies the trend based on the structure of the long-period fractals.
+// An uptrend is defined by successively higher fractal highs AND higher fractal lows.
+// A downtrend is defined by successively lower fractal lows AND lower fractal highs.
+// We use `ta.valuewhen` to get the stable values of the last two confirmed fractals.
+last_up_val = ta.valuewhen(up_fractal_long, high[long_pivot_bars], 0)
+prev_up_val = ta.valuewhen(up_fractal_long, high[long_pivot_bars], 1)
+last_down_val = ta.valuewhen(down_fractal_long, low[long_pivot_bars], 0)
+prev_down_val = ta.valuewhen(down_fractal_long, low[long_pivot_bars], 1)
+
+// Determine trend status
+is_uptrend = last_up_val > prev_up_val and last_down_val > prev_down_val
+is_downtrend = last_down_val < prev_down_val and last_up_val < prev_up_val
+
+// Create boolean filters for entries based on user's choice to use the trend filter
+trend_ok_for_buy = not use_fractal_filter or is_uptrend
+trend_ok_for_sell = not use_fractal_filter or is_downtrend
+
+// —————— Entry Logic ——————
+// This section defines the specific rules for trade entries.
+// It's based on a combination of the V-Formation, Stochastic elasticity, and the trigger candle.
+
+// 1. V-Formation Detection
+// A 3-bar pattern. For a buy, the middle bar [1] has the lowest low. For a sell, it has the highest high.
+// The author refers to this as a "V formation".
+v_formation_low = low[1] < low[2] and low[1] < low[0]
+v_formation_high = high[1] > high[2] and high[1] > high[0]
+
+// 2. Setup Conditions
+// A setup is valid if a V-formation occurs while the stochastic is in an "elastic" (overbought/oversold) state.
+// The optional trend filter is also applied here.
+buy_setup = trend_ok_for_buy and v_formation_low and k_line[1] < stoch_os
+sell_setup = trend_ok_for_sell and v_formation_high and k_line[1] > stoch_ob
+
+// 3. Trigger Conditions
+// The final signal is triggered by the close of the 3rd or 4th candle.
+is_bullish_close = close > open
+is_bearish_close = close < open
+
+// Standard Trigger: The 3rd candle of the V-formation closes in the trade direction.
+buy_trigger_standard = buy_setup and is_bullish_close
+sell_trigger_standard = sell_setup and is_bearish_close
+
+// Inside Bar Exception Trigger:
+// This logic checks on the current bar if a specific failed setup occurred on the prior bars.
+// The sequence is: V-formation swing on bar[2], followed by an adverse inside bar on bar[1], confirmed by a recovery on the current bar[0].
+v_formation_low_for_exception = low[2] < low[3] and low[2] < low[1]
+v_formation_high_for_exception = high[2] > high[3] and high[2] > high[1]
+
+// Check for the setup conditions leading up to the inside bar.
+buy_setup_for_exception = trend_ok_for_buy[1] and v_formation_low_for_exception and k_line[2] < stoch_os
+sell_setup_for_exception = trend_ok_for_sell[1] and v_formation_high_for_exception and k_line[2] > stoch_ob
+
+// Check if the 3rd candle (bar [1]) was an inside bar with an adverse close.
+is_inside_bar_on_prev = high[1] < high[2] and low[1] > low[2]
+is_bearish_close_on_prev = close[1] < open[1]
+is_bullish_close_on_prev = close[1] > open[1]
+
+// The final exception trigger fires if the 4th candle (current bar) closes in the desired direction.
+buy_trigger_exception = use_inside_bar_exception and buy_setup_for_exception and is_inside_bar_on_prev and is_bearish_close_on_prev and is_bullish_close
+sell_trigger_exception = use_inside_bar_exception and sell_setup_for_exception and is_inside_bar_on_prev and is_bullish_close_on_prev and is_bearish_close
+
+// Combine triggers for final entry signal
+buy_signal = buy_trigger_standard or buy_trigger_exception
+sell_signal = sell_trigger_standard or sell_trigger_exception
+
+// —————— State Management & Exit Logic ——————
+// This section manages the state of the trade (are we in a long, short, or flat)
+// and determines the exit signals based on the stochastic returning to an extreme level.
+
+var int trade_state = 0 // 0: flat, 1: long, -1: short
+
+// Update trade state based on new entry signals
+if buy_signal
+    trade_state := 1
+if sell_signal
+    trade_state := -1
+
+// Exit Condition:
+// - For a long trade, exit when the stochastic crosses OVER the overbought line.
+// - For a short trade, exit when the stochastic crosses UNDER the oversold line.
+exit_long_signal = show_exits and trade_state[1] == 1 and ta.crossover(k_line, stoch_ob)
+exit_short_signal = show_exits and trade_state[1] == -1 and ta.crossunder(k_line, stoch_os)
+
+// Reset the trade state to flat after an exit signal
+if exit_long_signal or exit_short_signal
+    trade_state := 0
+
+// —————— Plotting ——————
+// This section plots the visual signals on the chart.
+
+// Plot Buy and Sell entry arrows
+plotshape(buy_signal, style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.small, title="Buy Signal")
+plotshape(sell_signal, style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small, title="Sell Signal")
+
+// Plot Exit signal markers
+plotshape(exit_long_signal, style=shape.cross, location=location.abovebar, color=color.new(color.black, 0), size=size.tiny, title="Exit Long Signal")
+plotshape(exit_short_signal, style=shape.cross, location=location.belowbar, color=color.new(color.black, 0), size=size.tiny, title="Exit Short Signal")
