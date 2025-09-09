@@ -1,29 +1,46 @@
 //@version=5
-indicator("Simple EMA Flip", "EMA-Flip", overlay=true)
+indicator("Simple EMA Flip (v2)", "EMA-Flip v2", overlay=true)
 
 // —————— Inputs ——————
 ema_len = input.int(20, title="EMA Length")
+max_signals_per_direction = input.int(5, title="Max Signals Per Direction", minval=1)
 
 // —————— Calculations ——————
 ema_val = ta.ema(close, ema_len)
 
-// —————— Signal Logic ——————
+// —————— Signal Logic & State Machine ——————
+var int buy_signal_count = 0
+var int sell_signal_count = 0
+
+// Reset the counters when the price enters a new "regime" by crossing the EMA.
+if ta.crossover(close, ema_val) // Price has entered the "buy zone"
+    buy_signal_count := 0
+if ta.crossunder(close, ema_val) // Price has entered the "sell zone"
+    sell_signal_count := 0
+
+// Define the base signal conditions
 is_bullish = close > open
 is_bearish = close < open
+base_buy_signal = close > ema_val and is_bullish and is_bearish[1]
+base_sell_signal = close < ema_val and is_bearish and is_bullish[1]
 
-// Buy Signal: Price > EMA and the current candle is the first bullish one after a bearish one.
-buy_signal = close > ema_val and is_bullish and is_bearish[1]
+// Apply the counter filter to get the final signal
+buy_signal = base_buy_signal and (buy_signal_count < max_signals_per_direction)
+sell_signal = base_sell_signal and (sell_signal_count < max_signals_per_direction)
 
-// Sell Signal: Price < EMA and the current candle is the first bearish one after a bullish one.
-sell_signal = close < ema_val and is_bearish and is_bullish[1]
+// Update counters after a signal
+if buy_signal
+    buy_signal_count := buy_signal_count + 1
+if sell_signal
+    sell_signal_count := sell_signal_count + 1
 
 // —————— Plotting and Alerts ——————
 // Plot EMA on chart
-plot(ema_val, "EMA", color=color.new(color.orange, 0))
+plot(ema_val, "EMA", color=color.new(color.black, 0))
 
 // Plot Buy and Sell Signal Arrows
-plotshape(buy_signal, "Buy", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.small)
-plotshape(sell_signal, "Sell", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small)
+plotshape(buy_signal, "Buy", style=shape.triangleup, location=location.belowbar, color=color.rgb(9, 172, 128))
+plotshape(sell_signal, "Sell", style=shape.triangledown, location=location.abovebar, color=color.rgb(255, 5, 131))
 
 // Create Alerts
 alertcondition(buy_signal, title="EMA Flip Buy", message="Simple EMA Flip Buy Signal on {{ticker}}")
