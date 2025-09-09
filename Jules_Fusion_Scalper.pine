@@ -1,0 +1,66 @@
+//@version=5
+indicator("Jules' Fusion Scalper", "JFS", overlay=true)
+
+// —————— Inputs ——————
+ema_group = "EMA Settings"
+ema_fast_len = input.int(21, "Fast EMA Length", group = ema_group)
+ema_slow_len = input.int(50, "Slow EMA Length", group = ema_group)
+
+vol_group = "Volume Filter"
+use_vol_filter = input.bool(true, "Enable Volume Filter", group = vol_group, tooltip = "If enabled, a signal is only valid if the volume on the trigger candle is above its moving average.")
+vol_ma_len = input.int(20, "Volume MA Length", group = vol_group)
+
+// —————— Indicator Calculations ——————
+// EMAs
+ema_fast = ta.ema(close, ema_fast_len)
+ema_slow = ta.ema(close, ema_slow_len)
+
+// Volume MA
+vol_ma = ta.sma(volume, vol_ma_len)
+
+// Engulfing Candle Logic
+is_bullish_engulfing = close > open and close[1] < open[1] and close >= open[1] and open <= close[1]
+is_bearish_engulfing = close < open and close[1] > open[1] and close <= open[1] and open >= close[1]
+
+// —————— State Machine & Signal Logic ——————
+// 1. Trend Definition
+is_uptrend = ema_fast > ema_slow
+is_downtrend = ema_fast < ema_slow
+
+// 2. Setup State (Arming the signal)
+var bool buy_setup_armed = false
+var bool sell_setup_armed = false
+
+// Arm a buy setup if we are in an uptrend and price pulls back into the EMA zone (low dips below the fast EMA)
+if is_uptrend and ta.crossunder(low, ema_fast)
+    buy_setup_armed := true
+
+// Arm a sell setup if we are in a downtrend and price pulls back into the EMA zone (high pops above the fast EMA)
+if is_downtrend and ta.crossover(high, ema_fast)
+    sell_setup_armed := true
+
+// 3. Trigger & Filter Logic
+// Buy Trigger: a bullish engulfing candle that closes back above the fast EMA, confirming the pullback is over.
+buy_trigger = buy_setup_armed and is_bullish_engulfing and ta.crossover(close, ema_fast)
+volume_filter_ok = not use_vol_filter or volume > vol_ma
+buy_signal = buy_trigger and volume_filter_ok
+
+// Sell Trigger: a bearish engulfing candle that closes back below the fast EMA.
+sell_trigger = sell_setup_armed and is_bearish_engulfing and ta.crossunder(close, ema_fast)
+sell_signal = sell_trigger and volume_filter_ok
+
+// 4. Reset State
+// After a signal is fired, or if trend reverses, reset the armed state.
+if buy_signal or ta.crossunder(ema_fast, ema_slow)
+    buy_setup_armed := false
+if sell_signal or ta.crossover(ema_fast, ema_slow)
+    sell_setup_armed := false
+
+// —————— Plotting ——————
+// Plot EMAs
+plot(ema_fast, "Fast EMA", color=color.new(color.teal, 0))
+plot(ema_slow, "Slow EMA", color=color.new(color.orange, 0))
+
+// Plot Buy and Sell Signal Arrows
+plotshape(buy_signal, "Buy", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.small, title="Buy Signal")
+plotshape(sell_signal, "Sell", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small, title="Sell Signal")

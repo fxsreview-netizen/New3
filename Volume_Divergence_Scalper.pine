@@ -1,0 +1,108 @@
+//@version=5
+indicator("Volume Divergence Scalper", "V-Div Scalp", overlay=true)
+
+// —————— Inputs ——————
+osc_group = "Oscillator Settings"
+oscillator_option = input.string("OBV", "Divergence Source", options=["OBV", "RSI"], group = osc_group)
+rsi_len = input.int(14, "RSI Length", group = osc_group, tooltip="Only used if RSI is selected as the Divergence Source.")
+
+div_group = "Divergence Settings"
+pivot_lookback = input.int(5, "Pivot Lookback", group = div_group, tooltip="The number of bars to look back and forth to detect a pivot point for divergence.")
+div_lookback_window = input.int(20, "Divergence Signal Lookback Window", group = div_group, tooltip="How many bars the divergence signal should remain active while waiting for a trigger.")
+max_signals_per_direction = input.int(1, "Max Signals Per Direction", minval = 1, group = div_group, tooltip="Sets the max number of consecutive signals in one direction before requiring a signal in the opposite direction to reset the count.")
+
+filter_group = "Signal Filters"
+filterFirstCandle = input.bool(true, "First Candle Trigger Only", group = filter_group, tooltip="If true, a signal only fires on the first candle of a new color (e.g., first green candle after a red one for a buy).")
+
+adx_filter_group = "ADX Trend Strength Filter"
+use_adx_filter = input.bool(true, "Enable ADX Filter", group = adx_filter_group, tooltip="If true, signals are filtered out when the ADX is above the threshold, indicating a strong trend.")
+adx_len = input.int(14, "ADX Length", group = adx_filter_group)
+adx_threshold = input.int(25, "ADX Trend Threshold", group = adx_filter_group)
+
+// —————— Indicator Calculations ——————
+// Calculate both oscillators
+obv = ta.obv
+rsi = ta.rsi(close, rsi_len)
+
+// Select the oscillator to use for divergence based on user input
+oscillator = oscillator_option == "OBV" ? obv : rsi
+
+// Divergence Detection Logic
+pivot_bars = (pivot_lookback - 1) / 2
+// Bullish Divergence (Price: Lower Low, Oscillator: Higher Low)
+price_pivot_low_1 = ta.valuewhen(ta.pivotlow(low, pivot_bars, pivot_bars), low[pivot_bars], 0)
+price_pivot_low_2 = ta.valuewhen(ta.pivotlow(low, pivot_bars, pivot_bars), low[pivot_bars], 1)
+osc_pivot_low_1 = ta.valuewhen(ta.pivotlow(oscillator, pivot_bars, pivot_bars), oscillator[pivot_bars], 0)
+osc_pivot_low_2 = ta.valuewhen(ta.pivotlow(oscillator, pivot_bars, pivot_bars), oscillator[pivot_bars], 1)
+bullish_divergence = price_pivot_low_1 < price_pivot_low_2 and osc_pivot_low_1 > osc_pivot_low_2
+
+// Bearish Divergence (Price: Higher High, Oscillator: Lower High)
+price_pivot_high_1 = ta.valuewhen(ta.pivothigh(high, pivot_bars, pivot_bars), high[pivot_bars], 0)
+price_pivot_high_2 = ta.valuewhen(ta.pivothigh(high, pivot_bars, pivot_bars), high[pivot_bars], 1)
+osc_pivot_high_1 = ta.valuewhen(ta.pivothigh(oscillator, pivot_bars, pivot_bars), oscillator[pivot_bars], 0)
+osc_pivot_high_2 = ta.valuewhen(ta.pivothigh(oscillator, pivot_bars, pivot_bars), oscillator[pivot_bars], 1)
+bearish_divergence = price_pivot_high_1 > price_pivot_high_2 and osc_pivot_high_1 < osc_pivot_high_2
+
+// ADX Calculation
+[_, _, adx] = ta.dmi(adx_len, adx_len)
+
+// State management for divergence signal (how many bars ago did it happen?)
+var int bars_since_bull_div = 999
+var int bars_since_bear_div = 999
+
+if bullish_divergence
+    bars_since_bull_div := 0
+else
+    bars_since_bull_div := bars_since_bull_div[1] + 1
+
+if bearish_divergence
+    bars_since_bear_div := 0
+else
+    bars_since_bear_div := bars_since_bear_div[1] + 1
+
+// —————— Fused Signal Logic & State Machine ——————
+// State variables for counting signals
+var int buy_signal_count = 0
+var int sell_signal_count = 0
+
+// 1. Setup: A divergence has occurred recently.
+is_bull_div_active = bars_since_bull_div < div_lookback_window
+is_bear_div_active = bars_since_bear_div < div_lookback_window
+
+// 2. Trigger: A break in market structure (close above previous high, or below previous low).
+buy_trigger = close > high[1]
+sell_trigger = close < low[1]
+
+// 3. "First Candle" Filter Condition
+is_first_bullish = close > open and close[1] < open[1]
+is_first_bearish = close < open and close[1] > open[1]
+
+// 4. Final Signal: A signal is generated when a trigger occurs while a divergence setup is active and all filters are passed.
+adx_filter_ok = not use_adx_filter or adx < adx_threshold
+first_candle_filter_ok_buy = not filterFirstCandle or is_first_bullish
+first_candle_filter_ok_sell = not filterFirstCandle or is_first_bearish
+
+buy_signal = is_bull_div_active and buy_trigger and (buy_signal_count < max_signals_per_direction) and first_candle_filter_ok_buy and adx_filter_ok
+sell_signal = is_bear_div_active and sell_trigger and (sell_signal_count < max_signals_per_direction) and first_candle_filter_ok_sell and adx_filter_ok
+
+// 5. Update Counters After Signal
+if buy_signal
+    buy_signal_count := buy_signal_count + 1
+    sell_signal_count := 0 // Reset opposite counter
+if sell_signal
+    sell_signal_count := sell_signal_count + 1
+    buy_signal_count := 0 // Reset opposite counter
+
+// —————— Plotting ——————
+// The OBV is used for calculations but not plotted, to keep the main chart clean.
+// The user can add a standard OBV indicator separately if they wish to see it.
+// To plot the OBV, change overlay to false in the indicator() declaration and uncomment the line below.
+// plot(obv, "OBV", color=color.purple)
+
+// Plot Buy and Sell Signal Arrows
+plotshape(buy_signal, "Buy", style=shape.triangleup, location=location.belowbar, color=color.rgb(9, 172, 128), size=size.small, title="Buy Signal")
+plotshape(sell_signal, "Sell", style=shape.triangledown, location=location.abovebar, color=color.rgb(255, 5, 131), size=size.small, title="Sell Signal")
+
+// —————— Alerts ——————
+alertcondition(buy_signal, title="V-Div Scalper Buy", message="Volume Divergence Buy Signal on {{ticker}}")
+alertcondition(sell_signal, title="V-Div Scalper Sell", message="Volume Divergence Sell Signal on {{ticker}}")

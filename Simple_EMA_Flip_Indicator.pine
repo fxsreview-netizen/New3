@@ -1,0 +1,30 @@
+//@version=5
+indicator("Simple EMA Flip", "EMA-Flip", overlay=true)
+
+// —————— Inputs ——————
+ema_len = input.int(20, title="EMA Length")
+
+// —————— Calculations ——————
+ema_val = ta.ema(close, ema_len)
+
+// —————— Signal Logic ——————
+is_bullish = close > open
+is_bearish = close < open
+
+// Buy Signal: Price > EMA and the current candle is the first bullish one after a bearish one.
+buy_signal = close > ema_val and is_bullish and is_bearish[1]
+
+// Sell Signal: Price < EMA and the current candle is the first bearish one after a bullish one.
+sell_signal = close < ema_val and is_bearish and is_bullish[1]
+
+// —————— Plotting and Alerts ——————
+// Plot EMA on chart
+plot(ema_val, "EMA", color=color.new(color.orange, 0))
+
+// Plot Buy and Sell Signal Arrows
+plotshape(buy_signal, "Buy", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.small)
+plotshape(sell_signal, "Sell", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small)
+
+// Create Alerts
+alertcondition(buy_signal, title="EMA Flip Buy", message="Simple EMA Flip Buy Signal on {{ticker}}")
+alertcondition(sell_signal, title="EMA Flip Sell", message="Simple EMA Flip Sell Signal on {{ticker}}")

@@ -1,0 +1,105 @@
+//@version=5
+indicator("Monster Scalper (v2)", "M-Scalp v2", overlay=true)
+
+// —————— Inputs ——————
+// Trend Filter
+trend_group = "Macro Trend Filter"
+ema_slow_len = input.int(200, "Macro Trend EMA Length", group = trend_group)
+
+// Mean Reversion / Exhaustion
+reversion_group = "Mean Reversion / Exhaustion"
+ema_fast_len = input.int(21, "Mean EMA Length", group = reversion_group)
+atr_len = input.int(14, "ATR Length", group = reversion_group)
+atr_mult = input.float(2.0, "ATR Distance Multiplier", group = reversion_group)
+
+// Divergence Filter
+div_group = "RSI Divergence Filter"
+rsi_len = input.int(14, "RSI Length", group = div_group)
+pivot_lookback = input.int(5, "Pivot Lookback", group = div_group)
+div_lookback_window = input.int(10, "Divergence Lookback Window", group = div_group)
+
+// —————— Indicator Calculations ——————
+// EMAs
+ema_fast = ta.ema(close, ema_fast_len)
+ema_slow = ta.ema(close, ema_slow_len)
+
+// ATR Distance Threshold
+atr_val = ta.atr(atr_len)
+distance_threshold = atr_val * atr_mult
+
+// RSI
+rsi = ta.rsi(close, rsi_len)
+
+// Engulfing Candle Logic
+is_bullish_engulfing = close > open and close[1] < open[1] and close >= open[1] and open <= close[1]
+is_bearish_engulfing = close < open and close[1] > open[1] and close <= open[1] and open >= close[1]
+
+// RSI Divergence Calculations
+pivot_bars = (pivot_lookback - 1) / 2
+// Bullish Divergence Detection
+price_pivot_low_1 = ta.valuewhen(ta.pivotlow(low, pivot_bars, pivot_bars), low[pivot_bars], 0)
+price_pivot_low_2 = ta.valuewhen(ta.pivotlow(low, pivot_bars, pivot_bars), low[pivot_bars], 1)
+rsi_pivot_low_1 = ta.valuewhen(ta.pivotlow(rsi, pivot_bars, pivot_bars), rsi[pivot_bars], 0)
+rsi_pivot_low_2 = ta.valuewhen(ta.pivotlow(rsi, pivot_bars, pivot_bars), rsi[pivot_bars], 1)
+bullish_divergence = price_pivot_low_1 < price_pivot_low_2 and rsi_pivot_low_1 > rsi_pivot_low_2
+// Bearish Divergence Detection
+price_pivot_high_1 = ta.valuewhen(ta.pivothigh(high, pivot_bars, pivot_bars), high[pivot_bars], 0)
+price_pivot_high_2 = ta.valuewhen(ta.pivothigh(high, pivot_bars, pivot_bars), high[pivot_bars], 1)
+rsi_pivot_high_1 = ta.valuewhen(ta.pivothigh(rsi, pivot_bars, pivot_bars), rsi[pivot_bars], 0)
+rsi_pivot_high_2 = ta.valuewhen(ta.pivothigh(rsi, pivot_bars, pivot_bars), rsi[pivot_bars], 1)
+bearish_divergence = price_pivot_high_1 > price_pivot_high_2 and rsi_pivot_high_1 < rsi_pivot_high_2
+
+// —————— State Machine & Fused Signal Logic ——————
+// This section tracks each condition's state over time, then fuses them for a final signal.
+
+// State 1: Divergence State (how many bars ago did a divergence occur?)
+var int bars_since_bull_div = 999
+var int bars_since_bear_div = 999
+if bullish_divergence
+    bars_since_bull_div := 0
+else
+    bars_since_bull_div := bars_since_bull_div[1] + 1
+if bearish_divergence
+    bars_since_bear_div := 0
+else
+    bars_since_bear_div := bars_since_bear_div[1] + 1
+
+// State 2: Exhaustion State (how many bars ago was price over-extended?)
+var int bars_since_exhaustion_dip = 999
+is_exhaustion_dip = (ema_fast - close) > distance_threshold
+if is_exhaustion_dip
+    bars_since_exhaustion_dip := 0
+else
+    bars_since_exhaustion_dip := bars_since_exhaustion_dip[1] + 1
+
+var int bars_since_exhaustion_rip = 999
+is_exhaustion_rip = (close - ema_fast) > distance_threshold
+if is_exhaustion_rip
+    bars_since_exhaustion_rip := 0
+else
+    bars_since_exhaustion_rip := bars_since_exhaustion_rip[1] + 1
+
+// Final Signal Assembly
+// The trigger is the engulfing candle. We then check if the other conditions have been met recently.
+// Buy Signal
+trigger_ok_buy = is_bullish_engulfing
+macro_trend_ok_buy = close[1] > ema_slow // Check trend on the bar before the trigger
+exhaustion_ok_buy = bars_since_exhaustion_dip[1] < div_lookback_window
+divergence_ok_buy = bars_since_bull_div[1] < div_lookback_window
+buy_signal = trigger_ok_buy and macro_trend_ok_buy and exhaustion_ok_buy and divergence_ok_buy
+
+// Sell Signal
+trigger_ok_sell = is_bearish_engulfing
+macro_trend_ok_sell = close[1] < ema_slow
+exhaustion_ok_sell = bars_since_exhaustion_rip[1] < div_lookback_window
+divergence_ok_sell = bars_since_bear_div[1] < div_lookback_window
+sell_signal = trigger_ok_sell and macro_trend_ok_sell and exhaustion_ok_sell and divergence_ok_sell
+
+// —————— Plotting ——————
+// Plot EMAs for context
+plot(ema_fast, "Fast EMA", color=color.new(color.teal, 0))
+plot(ema_slow, "Slow EMA", color=color.new(color.purple, 0))
+
+// Plot Buy and Sell Signal Arrows
+plotshape(buy_signal, "Monster Buy", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.normal)
+plotshape(sell_signal, "Monster Sell", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.normal)
