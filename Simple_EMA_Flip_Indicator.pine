@@ -1,8 +1,12 @@
 //@version=5
-indicator("Simple EMA Flip", "EMA-Flip", overlay=true)
+indicator("Simple EMA Flip (v3)", "EMA-Flip v3", overlay=true)
 
 // —————— Inputs ——————
-ema_len = input.int(50, title="EMA Length")
+logic_group = "Signal Logic"
+signal_logic_option = input.string("Continuation (1st Bullish)", title="Signal Logic Type", options=["Continuation (1st Bullish)", "Pullback (1st Bearish)", "Pullback Continuation"], group=logic_group)
+
+ema_group = "EMA Settings"
+ema_len = input.int(50, title="EMA Length", group=ema_group)
 max_signals_per_direction = input.int(15, title="Max Signals Per Direction", minval=1)
 
 // —————— Calculations ——————
@@ -12,35 +16,60 @@ ema_val = ta.ema(close, ema_len)
 var int buy_signal_count = 0
 var int sell_signal_count = 0
 
-// Reset the counters when the price enters a new "regime" by crossing the EMA.
-if ta.crossover(close, ema_val) // Price has entered the "buy zone"
-    buy_signal_count := 0
-if ta.crossunder(close, ema_val) // Price has entered the "sell zone"
-    sell_signal_count := 0
-
-// Define the base signal conditions
+// Define candle conditions
 is_bullish = close > open
 is_bearish = close < open
-base_buy_signal = close > ema_val and is_bullish and is_bearish[1]
-base_sell_signal = close < ema_val and is_bearish and is_bullish[1]
+is_first_bullish = is_bullish and is_bearish[1]
+is_first_bearish = is_bearish and is_bullish[1]
 
-// Apply the counter filter to get the final signal
+// --- Define the two base signal logics ---
+// Logic 1 (Continuation): Signal on the first bullish candle in an uptrend context.
+buy_continuation = close > ema_val and is_first_bullish
+sell_continuation = close < ema_val and is_first_bearish
+
+// Logic 2 (Pullback): Signal on the first bearish (pullback) candle in an uptrend context.
+buy_pullback = close > ema_val and is_first_bearish
+sell_pullback = close < ema_val and is_first_bullish
+
+// Logic 3 (Pullback Continuation): Signal on the 2nd+ consecutive bearish candle in an uptrend context.
+buy_pullback_cont = close > ema_val and is_bearish and is_bearish[1]
+sell_pullback_cont = close < ema_val and is_bullish and is_bullish[1]
+
+// --- Final Signal Selection & State Update ---
+// 1. Select the base signal based on user input
+var bool base_buy_signal = false
+var bool base_sell_signal = false
+
+switch signal_logic_option
+    "Continuation (1st Bullish)" =>
+        base_buy_signal := buy_continuation
+        base_sell_signal := sell_continuation
+    "Pullback (1st Bearish)" =>
+        base_buy_signal := buy_pullback
+        base_sell_signal := sell_pullback
+    "Pullback Continuation" =>
+        base_buy_signal := buy_pullback_cont
+        base_sell_signal := sell_pullback_cont
+
+// 2. Apply the counter filter to the selected base signal
 buy_signal = base_buy_signal and (buy_signal_count < max_signals_per_direction)
 sell_signal = base_sell_signal and (sell_signal_count < max_signals_per_direction)
 
-// Update counters after a signal
+// 3. Update and reset counters after a signal. A signal in one direction resets the counter for the other.
 if buy_signal
     buy_signal_count := buy_signal_count + 1
+    sell_signal_count := 0
 if sell_signal
     sell_signal_count := sell_signal_count + 1
+    buy_signal_count := 0
 
 // —————— Plotting and Alerts ——————
 // Plot EMA on chart
 plot(ema_val, "EMA", color=color.new(color.black, 0))
 
 // Plot Buy and Sell Signal Arrows
-plotshape(buy_signal, "Buy", style=shape.triangleup, location=location.belowbar, color=color.rgb(9, 172, 128), size=size.normal)
-plotshape(sell_signal, "Sell", style=shape.triangledown, location=location.abovebar, color=color.rgb(255, 5, 131), size=size.normal)
+plotshape(buy_signal, "Buy", style=shape.triangleup, location=location.belowbar, color=color.rgb(9, 172, 128), size=size.small)
+plotshape(sell_signal, "Sell", style=shape.triangledown, location=location.abovebar, color=color.rgb(255, 5, 131), size=size.small)
 
 // Create Alerts
 alertcondition(buy_signal, title="EMA Flip Buy", message="Simple EMA Flip Buy Signal on {{ticker}}")
