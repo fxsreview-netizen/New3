@@ -1,0 +1,41 @@
+//@version=3
+study("Simple Reverse Signals", overlay = true, precision = 0)
+prd = input(title="Period", defval = 34, minval = 1)
+
+// --- Reverse Signals ---
+show_reverse_signals = input(title="Show Reverse Signals", type=bool, defval=true)
+reverse_sell_threshold = input(title="Reverse Sell Threshold", defval=200)
+reverse_buy_threshold = input(title="Reverse Buy Threshold", defval=-200)
+consecutive_bars_needed = input(title="Consecutive Bars for Reverse Signal", defval=4, minval=1)
+
+tw = high - max(open, close)
+bw = min(open, close) - low
+body = abs(close - open)
+
+_rate(cond) => 0.5 * (tw + bw + (cond ? 2 * body : 0)) / (tw + bw + body)
+
+volup =  volume * _rate(open <= close)
+voldown = volume * _rate(open >= close)
+rate = linreg(volup - voldown, prd, 0)
+
+// --- Reverse Signal Logic ---
+sell_bar_count = 0.0
+sell_bar_count := rate >= reverse_sell_threshold ? nz(sell_bar_count[1]) + 1 : 0
+buy_bar_count = 0.0
+buy_bar_count := rate <= reverse_buy_threshold ? nz(buy_bar_count[1]) + 1 : 0
+
+reverse_sell_signal = show_reverse_signals and (sell_bar_count >= consecutive_bars_needed)
+reverse_buy_signal = show_reverse_signals and (buy_bar_count >= consecutive_bars_needed)
+
+// --- Plotting ---
+signal_color = #FFFF00 // Yellow for both signals
+b_color = reverse_sell_signal or reverse_buy_signal ? signal_color : na
+barcolor(b_color, title="Bar Color")
+
+// Plot signals on chart
+plotshape(reverse_buy_signal, title="Reverse Buy", style=shape.triangleup, location=location.belowbar, color=signal_color, size=size.small)
+plotshape(reverse_sell_signal, title="Reverse Sell", style=shape.triangledown, location=location.abovebar, color=signal_color, size=size.small)
+
+// --- Alerts ---
+alertcondition(reverse_buy_signal, title="Reverse Buy", message="New Reverse Buy Signal")
+alertcondition(reverse_sell_signal, title="Reverse Sell", message="New Reverse Sell Signal")
