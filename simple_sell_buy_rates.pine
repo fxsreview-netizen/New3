@@ -1,0 +1,60 @@
+//@version=3
+study("Simple Sell/Buy Rates", overlay = true, precision = 0)
+prd = input(title="Period", defval = 34, minval = 1)
+
+show_plain_zero = input(title="Show Plain Zero Signals", type=bool, defval=false)
+buy_threshold = input(title="Buy Threshold", defval=10)
+sell_threshold = input(title="Sell Threshold", defval=-10)
+
+// --- Reverse Signals ---
+show_reverse_signals = input(title="Show Reverse Signals", type=bool, defval=true)
+reverse_sell_threshold = input(title="Reverse Sell Threshold", defval=200)
+reverse_buy_threshold = input(title="Reverse Buy Threshold", defval=-200)
+consecutive_bars_needed = input(title="Consecutive Bars for Reverse Signal", defval=3, minval=1)
+
+tw = high - max(open, close)
+bw = min(open, close) - low
+body = abs(close - open)
+
+_rate(cond) => 0.5 * (tw + bw + (cond ? 2 * body : 0)) / (tw + bw + body)
+
+volup =  volume * _rate(open <= close)
+voldown = volume * _rate(open >= close)
+rate = linreg(volup - voldown, prd, 0)
+
+zero_cross_up = crossover(rate, 0)
+zero_cross_down = crossunder(rate, 0)
+
+threshold_buy = zero_cross_up and (rate >= buy_threshold)
+zero_buy = zero_cross_up and (rate < buy_threshold)
+
+threshold_sell = zero_cross_down and (rate <= sell_threshold)
+zero_sell = zero_cross_down and (rate > sell_threshold)
+
+// --- Reverse Signal Logic ---
+sell_bar_count = 0.0
+sell_bar_count := rate >= reverse_sell_threshold ? nz(sell_bar_count[1]) + 1 : 0
+buy_bar_count = 0.0
+buy_bar_count := rate <= reverse_buy_threshold ? nz(buy_bar_count[1]) + 1 : 0
+
+reverse_sell_signal = show_reverse_signals and (sell_bar_count >= consecutive_bars_needed)
+reverse_buy_signal = show_reverse_signals and (buy_bar_count >= consecutive_bars_needed)
+
+// --- Plotting ---
+b_color = reverse_sell_signal ? #FF9800 : reverse_buy_signal ? #2962FF : threshold_buy ? #00FF00 : show_plain_zero and zero_buy ? #008000 : threshold_sell ? #FF0000 : show_plain_zero and zero_sell ? #800000 : na
+barcolor(b_color, title="Bar Color")
+
+// Plot signals on chart
+plotshape(show_plain_zero and zero_buy, title="Zero Buy", style=shape.triangleup, location=location.belowbar, color=#008000, size=size.small)
+plotshape(threshold_buy, title="Threshold Buy", style=shape.triangleup, location=location.belowbar, color=#00FF00, size=size.small)
+plotshape(show_plain_zero and zero_sell, title="Zero Sell", style=shape.triangledown, location=location.abovebar, color=#800000, size=size.small)
+plotshape(threshold_sell, title="Threshold Sell", style=shape.triangledown, location=location.abovebar, color=#FF0000, size=size.small)
+plotshape(reverse_buy_signal, title="Reverse Buy", style=shape.triangleup, location=location.belowbar, color=#2962FF, size=size.small)
+plotshape(reverse_sell_signal, title="Reverse Sell", style=shape.triangledown, location=location.abovebar, color=#FF9800, size=size.small)
+
+alertcondition(show_plain_zero and zero_buy, title="Zero Crossover Buy", message="New Zero Crossover Buy Signal")
+alertcondition(threshold_buy, title="Threshold Buy", message="New Threshold Buy Signal")
+alertcondition(show_plain_zero and zero_sell, title="Zero Crossover Sell", message="New Zero Crossover Sell Signal")
+alertcondition(threshold_sell, title="Threshold Sell", message="New Threshold Sell Signal")
+alertcondition(reverse_buy_signal, title="Reverse Buy", message="New Reverse Buy Signal")
+alertcondition(reverse_sell_signal, title="Reverse Sell", message="New Reverse Sell Signal")
