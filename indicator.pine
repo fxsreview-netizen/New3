@@ -1,0 +1,91 @@
+//@version=5
+indicator("NN + EMA Cloud", overlay=true)
+
+// EMA Cloud Settings
+ema_group = "EMA Cloud"
+fastEmaLength = input.int(20, "Fast EMA", group=ema_group)
+slowEmaLength = input.int(50, "Slow EMA", group=ema_group)
+showEmas = input.bool(false, "Show EMA Lines", group=ema_group)
+
+// HTF Confirmation Settings
+htf_group = "HTF Confirmation"
+htf = input.timeframe("3", "Higher Timeframe", group=htf_group)
+htfEmaLength = input.int(50, "HTF EMA Length", group=htf_group)
+
+// Input settings
+signal_group = "Signal Settings"
+signalPeriod = input.int(14, "Signal Period", minval=1, group=signal_group)
+volatilityPeriod = input.int(20, "Volatility Period", minval=1, group=signal_group)
+maLength = input.int(50, "Price Filter MA Length", minval=1, group=signal_group)
+alertThreshold = input.float(0.5, "Alert Threshold", minval=0.1, step=0.1, group=signal_group)
+maxSignals = input.int(1, "Max Signals Per Direction", minval=1, group=signal_group)
+
+// EMA Cloud Calculation
+fastEma = ta.ema(close, fastEmaLength)
+slowEma = ta.ema(close, slowEmaLength)
+
+// HTF EMA Calculation
+htfEma = request.security(syminfo.tickerid, htf, ta.ema(close, htfEmaLength))
+
+// Plot EMA Cloud
+p_fastEma = plot(showEmas ? fastEma : na, color=color.new(#04eeaf, 0), title="Fast EMA")
+p_slowEma = plot(showEmas ? slowEma : na, color=color.new(#ff0583, 0), title="Slow EMA")
+fill(p_fastEma, p_slowEma, color=color.new(#636363, 90), title="EMA Cloud")
+
+// Plot HTF EMA
+plot(htfEma, color=color.new(color.white, 0), title="HTF EMA")
+
+// Calculate price change and volume
+priceChange = close - close[1]
+volumeChange = volume - volume[1]
+
+// Volume momentum calculation (hypothesized as price change * volume)
+momentum = priceChange * volume
+momentumEma = ta.ema(momentum, signalPeriod)
+
+// Volatility calculation (standard deviation of price changes)
+volatility = ta.stdev(close, volatilityPeriod)
+
+// Normalize momentum relative to volatility
+momentumScore = momentumEma / volatility
+
+// Trend filter (EMA of price)
+trendMA = ta.ema(close, maLength)
+isBullishTrend = close > trendMA and trendMA > trendMA[1]
+isBearishTrend = close < trendMA and trendMA < trendMA[1]
+
+// EMA Stack Condition
+bullishStack = fastEma > slowEma
+bearishStack = fastEma < slowEma
+
+// HTF Confirmation
+isHtfBullish = close > htfEma
+isHtfBearish = close < htfEma
+
+// --- Signal Counters & Event Logic ---
+var int buyCounter = 0
+var int sellCounter = 0
+
+// 1. Identify the core momentum crossover event
+buyMomentumEvent = ta.crossover(momentumScore, alertThreshold)
+sellMomentumEvent = ta.crossunder(momentumScore, -alertThreshold)
+
+// 2. On the bar of the event, check if filters are also true AND if signal limit has not been reached
+buySignalEvent = buyMomentumEvent and isBullishTrend and bullishStack and isHtfBullish and buyCounter < maxSignals
+sellSignalEvent = sellMomentumEvent and isBearishTrend and bearishStack and isHtfBearish and sellCounter < maxSignals
+
+// 3. Update counters when a signal event occurs
+if (buySignalEvent)
+    buyCounter := buyCounter + 1
+    sellCounter := 0
+if (sellSignalEvent)
+    sellCounter := sellCounter + 1
+    buyCounter := 0
+
+// Plot buy/sell signals
+plotshape(buySignalEvent, style=shape.triangleup, location=location.belowbar, color=color.new(#04eeaf, 0), size=size.small, title="Buy Signal")
+plotshape(sellSignalEvent, style=shape.triangledown, location=location.abovebar, color=color.new(#ff0583, 0), size=size.small, title="Sell Signal")
+
+// Alerts for momentum-based signals
+alertcondition(buySignalEvent, title="Buy Signal", message="NVI Buy Signal: Momentum above threshold and bullish trend")
+alertcondition(sellSignalEvent, title="Sell Signal", message="NVI Sell Signal: Momentum below threshold and bearish trend")
