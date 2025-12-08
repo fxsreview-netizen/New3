@@ -1,0 +1,253 @@
+//@version=5
+indicator("Multi-Signal Trend System", overlay=true, shorttitle="MSTS")
+
+// =============================================================================
+// INPUT PARAMETERS
+// =============================================================================
+
+lookback_period = input.int(252, "Lookback Period", minval=50, maxval=500)
+short_smoothing = input.int(1, "Short Smoothing Period", minval=1)
+long_smoothing = input.int(12, "Long Smoothing Period", minval=2)
+stdev_value = input.float(1.8, "Standard Deviation Multiplier")
+
+// EMA setting
+ema_length = input.int(9, "EMA Length", minval=1)
+
+// Signal filter option
+filter_first_candle = input.bool(false, "Show Only First Candle Signals",
+     tooltip="Only show trend signals on the first bullish candle after bearish or first bearish candle after bullish")
+
+show_secondary_signals = input.bool(false, "Show Secondary Entry Signals",
+     tooltip="Show signals on every first bullish candle when trend is bullish and price is above EMA")
+
+max_secondary_signals = input.int(2, "Max Secondary Signals Per Direction", minval=1, maxval=10,
+     tooltip="Maximum number of secondary signals to show in each direction before requiring a trend reversal")
+
+ema_filter_option = input.bool(false, "Filter Signals by EMA",
+     tooltip="Only show buy signals if the close price is above the EMA and sell signals if the close price is below the EMA.")
+
+// Signal component lengths
+rsi_length_oscillator = input.int(14, "RSI Length")
+macd_fast = input.int(12, "MACD Fast")
+macd_slow = input.int(26, "MACD Slow")
+macd_signal = input.int(9, "MACD Signal")
+bb_length = input.int(20, "Bollinger Bands Length")
+bb_mult = input.float(2.0, "BB Std Dev Multiplier")
+stoch_k_period = input.int(14, "Stochastic %K Period")
+stoch_smooth = input.int(3, "Stochastic %K Smoothing")
+stoch_d_period = input.int(3, "Stochastic %D Period")
+atr_length_oscillator = input.int(14, "ATR Length")
+
+// =============================================================================
+// HELPER FUNCTIONS
+// =============================================================================
+
+normalize_std_dev(src, len) =>
+    if na(src)
+        50.0
+    else
+        mean_val = ta.sma(src, len)
+        std_val = ta.stdev(src, len)
+        if na(std_val) or std_val == 0 or na(mean_val)
+            50.0
+        else
+            z_score = (src - mean_val) / std_val
+            normalized = 50.0 + (z_score * 15.0)
+            math.max(0.0, math.min(100.0, normalized))
+
+// =============================================================================
+// TECHNICAL INDICATOR COMPONENTS
+// =============================================================================
+
+// 1. RSI
+rsi_value = ta.rsi(close, rsi_length_oscillator)
+rsi_normalized = normalize_std_dev(rsi_value, lookback_period)
+
+// 2. MACD
+[macd_line, signal_line, histogram] = ta.macd(close, macd_fast, macd_slow, macd_signal)
+macd_oscillator = macd_line - signal_line
+macd_normalized = normalize_std_dev(macd_oscillator, lookback_period)
+
+// 3. Bollinger Bands
+bb_basis = ta.sma(close, bb_length)
+bb_dev = bb_mult * ta.stdev(close, bb_length)
+bb_upper = bb_basis + bb_dev
+bb_lower = bb_basis - bb_dev
+bb_position = na(bb_upper) or na(bb_lower) or (bb_upper - bb_lower) == 0 ? 50.0 :
+              100 * (close - bb_lower) / (bb_upper - bb_lower)
+bb_normalized = normalize_std_dev(bb_position, lookback_period)
+
+// 4. Stochastic
+stoch_k = ta.stoch(close, high, low, stoch_k_period)
+stoch_d = ta.sma(stoch_k, stoch_d_period)
+stoch_normalized = na(stoch_d) ? 50.0 : stoch_d
+
+// 5. ATR with Directional Movement
+atr_value = ta.atr(atr_length_oscillator)
+[plus_di, minus_di, adx] = ta.dmi(atr_length_oscillator, atr_length_oscillator)
+di_diff = plus_di - minus_di
+atr_pct = na(close) or close == 0 ? 0 : (atr_value / close) * 100
+volatility_factor = atr_pct / ta.sma(atr_pct, lookback_period)
+directional_volatility = di_diff * volatility_factor
+dv_highest = ta.highest(directional_volatility, lookback_period)
+dv_lowest = ta.lowest(directional_volatility, lookback_period)
+atr_normalized = na(dv_highest) or na(dv_lowest) or (dv_highest - dv_lowest) == 0 ? 50.0 :
+                 50 + 50 * (directional_volatility - (dv_highest + dv_lowest) / 2) / ((dv_highest - dv_lowest) / 2)
+
+// =============================================================================
+// COMBINED SENTIMENT
+// =============================================================================
+
+combined_sentiment_raw = (rsi_normalized + macd_normalized + bb_normalized +
+                         stoch_normalized + atr_normalized) / 5
+
+combined_sentiment_short = ta.sma(combined_sentiment_raw, short_smoothing)
+combined_sentiment_long = ta.sma(combined_sentiment_raw, long_smoothing)
+
+// =============================================================================
+// CROSSOVERS AND TREND
+// =============================================================================
+
+bullish_crossover = ta.crossover(combined_sentiment_short, combined_sentiment_long)
+bearish_crossover = ta.crossunder(combined_sentiment_short, combined_sentiment_long)
+
+var bool is_bullish_trend = true
+if bullish_crossover
+    is_bullish_trend := true
+else if bearish_crossover
+    is_bullish_trend := false
+
+// Calculate boundaries
+avg_sentiment = (combined_sentiment_short + combined_sentiment_long) / 2
+mid_line = ta.sma(ta.sma(avg_sentiment, lookback_period), lookback_period)
+sentiment_stdev = ta.stdev(avg_sentiment, lookback_period * 2)
+top_sentiment = mid_line + stdev_value * sentiment_stdev
+bot_sentiment = mid_line - stdev_value * sentiment_stdev
+
+// Overbought/Oversold conditions
+show_overbought = avg_sentiment > top_sentiment
+show_oversold = avg_sentiment < bot_sentiment
+
+// Calculate EMA for signal filtering
+ema_value = ta.ema(close, ema_length)
+candleTouchesEma = high >= ema_value and low <= ema_value
+
+// =============================================================================
+// SIGNAL DETECTION
+// =============================================================================
+
+// Primary crosses
+bullCross = show_oversold[1] and not show_oversold[0] and is_bullish_trend and candleTouchesEma
+bearCross = show_overbought[1] and not show_overbought[0] and not is_bullish_trend and candleTouchesEma
+
+// Trend changes (when plot changes color)
+trendTurnBullish = not is_bullish_trend[1] and is_bullish_trend and candleTouchesEma
+trendTurnBearish = is_bullish_trend[1] and not is_bullish_trend and candleTouchesEma
+
+// Candle color detection
+isBullishCandle = close > open
+isBearishCandle = close < open
+wasBullishCandle = close[1] > open[1]
+wasBearishCandle = close[1] < open[1]
+
+// First candle of its kind detection
+isFirstBullishCandle = isBullishCandle and wasBearishCandle
+isFirstBearishCandle = isBearishCandle and wasBullishCandle
+
+// Apply filter if enabled
+trendTurnBullishFiltered = filter_first_candle ? (trendTurnBullish and isFirstBullishCandle) : trendTurnBullish
+trendTurnBearishFiltered = filter_first_candle ? (trendTurnBearish and isFirstBearishCandle) : trendTurnBearish
+
+// =============================================================================
+// PLOTTING
+// =============================================================================
+
+
+// Plot EMA
+plot(ema_value, title="EMA", color=color.black, linewidth=1)
+
+// Track secondary signal counts
+var int bullSecondaryCount = 0
+var int bearSecondaryCount = 0
+
+// Reset counters on trend change
+if trendTurnBullish
+    bullSecondaryCount := 0
+    bearSecondaryCount := 0
+else if trendTurnBearish
+    bullSecondaryCount := 0
+    bearSecondaryCount := 0
+
+// Secondary signals conditions
+secondaryBullCondition = show_secondary_signals and isFirstBullishCandle and is_bullish_trend and close > ema_value and candleTouchesEma
+secondaryBearCondition = show_secondary_signals and isFirstBearishCandle and not is_bullish_trend and close < ema_value and candleTouchesEma
+
+// Check if we're within the max count
+secondaryBullSignal = secondaryBullCondition and bullSecondaryCount < max_secondary_signals
+secondaryBearSignal = secondaryBearCondition and bearSecondaryCount < max_secondary_signals
+
+// Update counters when signals fire
+if secondaryBullSignal
+    bullSecondaryCount += 1
+if secondaryBearSignal
+    bearSecondaryCount += 1
+
+// EMA Filter Logic
+bullCross_filtered = ema_filter_option ? (bullCross and close > ema_value) : bullCross
+bearCross_filtered = ema_filter_option ? (bearCross and close < ema_value) : bearCross
+trendTurnBullishFiltered_final = ema_filter_option ? (trendTurnBullishFiltered and close > ema_value) : trendTurnBullishFiltered
+trendTurnBearishFiltered_final = ema_filter_option ? (trendTurnBearishFiltered and close < ema_value) : trendTurnBearishFiltered
+
+// Plot signals on chart
+plotshape(bullCross_filtered, title="Bull Cross Signal", style=shape.triangleup,
+     location=location.belowbar, color=color.new(color.blue, 0), size=size.small)
+
+plotshape(bearCross_filtered, title="Bear Cross Signal", style=shape.triangledown,
+     location=location.abovebar, color=color.new(color.red, 0), size=size.small)
+
+plotshape(trendTurnBullishFiltered_final, title="Trend Turn Bullish", style=shape.circle,
+     location=location.belowbar, color=color.new(color.blue, 0), size=size.tiny)
+
+plotshape(trendTurnBearishFiltered_final, title="Trend Turn Bearish", style=shape.circle,
+     location=location.abovebar, color=color.new(color.red, 0), size=size.tiny)
+
+plotshape(secondaryBullSignal, title="Secondary Bull Entry", style=shape.diamond,
+     location=location.belowbar, color=color.new(color.blue, 0), size=size.tiny)
+
+plotshape(secondaryBearSignal, title="Secondary Bear Entry", style=shape.diamond,
+     location=location.abovebar, color=color.new(color.red, 0), size=size.tiny)
+
+// Background color for trend turns
+bgcolor(trendTurnBullishFiltered_final ? color.new(color.blue, 85) : trendTurnBearishFiltered_final ? color.new(color.red, 85) : na)
+
+// =============================================================================
+// ALERTS
+// =============================================================================
+
+// Combined signals for convenience
+allBuySignals = bullCross_filtered or trendTurnBullishFiltered_final or secondaryBullSignal
+allSellSignals = bearCross_filtered or trendTurnBearishFiltered_final or secondaryBearSignal
+
+alertcondition(bullCross_filtered, title="Bull Cross",
+     message="BUY SIGNAL: Oversold crossover on {{ticker}} at {{close}}")
+
+alertcondition(bearCross_filtered, title="Bear Cross",
+     message="SELL SIGNAL: Overbought crossover on {{ticker}} at {{close}}")
+
+alertcondition(trendTurnBullishFiltered_final, title="Trend Turned Bullish",
+     message="Trend turned BULLISH on {{ticker}} at {{close}}")
+
+alertcondition(trendTurnBearishFiltered_final, title="Trend Turned Bearish",
+     message="Trend turned BEARISH on {{ticker}} at {{close}}")
+
+alertcondition(secondaryBullSignal, title="Secondary Bull Entry",
+     message="Secondary BULL entry signal on {{ticker}} at {{close}}")
+
+alertcondition(secondaryBearSignal, title="Secondary Bear Entry",
+     message="Secondary BEAR entry signal on {{ticker}} at {{close}}")
+
+alertcondition(allBuySignals, title="All Buy Signals",
+     message="BUY SIGNAL on {{ticker}} at {{close}}")
+
+alertcondition(allSellSignals, title="All Sell Signals",
+     message="SELL SIGNAL on {{ticker}} at {{close}}")
